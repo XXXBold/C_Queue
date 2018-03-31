@@ -5,28 +5,35 @@
 
 #include "booltype.h"
 #include "Queue.h"
+#if defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+  #define __STDC_FORMAT_MACROS
+  #include <inttypes.h>
+  #ifdef _WIN32
+    #ifdef _WIN64
+      #define PRI_SIZET PRIu64
+    #else
+      #define PRI_SIZET PRIu32
+    #endif
+  #else
+    #define PRI_SIZET "zu"
+  #endif
+#else
+  #define PRI_SIZET "%lu"
+#endif /* __STDC_VERSION__ >= C99 */
 #ifdef QUEUE_INCLUDE_THREADSAFETY
   #include <pthread.h>
 #endif /* QUEUE_INCLUDE_THREADSAFETY */
 
-/**
- * Datasize is signed int, so the highest byte is not used to indicate the size.
- * It's used internally to indicate whenever there's just one block allocated for Element+data.
- */
-#define QUEUE_USE_ONE_MEMORY_BLOCK_IS_SET(var)  (var&(1<<((sizeof(int)*CHAR_BIT)-1)))
-#define QUEUE_USE_ONE_MEMORY_BLOCK_SET(var)     (var|(1<<((sizeof(int)*CHAR_BIT)-1)))
-#define QUEUE_USE_ONE_MEMORY_BLOCK_UNSET(var)   (var&(~(1<<((sizeof(int)*CHAR_BIT)-1))))
-
 #ifdef QUEUE_INCLUDE_THREADSAFETY
-  #define QUEUE_MUTEX_INIT(opt,m)    if(opt&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_init(m,NULL)
-  #define QUEUE_MUTEX_DESTROY(opt,m) if(opt&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_destroy(m)
-  #define QUEUE_MUTEX_LOCK(opt,m)    if(opt&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_lock(m)
-  #define QUEUE_MUTEX_UNLOCK(opt,m)  if(opt&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_unlock(m)
+  #define QUEUE_MUTEX_INIT(queue)    if(queue->uiQueueOptions&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_init(&queue->tagQueueMutex,NULL)
+  #define QUEUE_MUTEX_DESTROY(queue) if(queue->uiQueueOptions&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_destroy(&queue->tagQueueMutex)
+  #define QUEUE_MUTEX_LOCK(queue)    if(queue->uiQueueOptions&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_lock(&queue->tagQueueMutex)
+  #define QUEUE_MUTEX_UNLOCK(queue)  if(queue->uiQueueOptions&QUEUE_OPTION_SYNCHRONIZED) pthread_mutex_unlock(&queue->tagQueueMutex)
 #else /* !QUEUE_INCLUDE_THREADSAFETY */
-  #define QUEUE_MUTEX_INIT(opt,m)
-  #define QUEUE_MUTEX_DESTROY(opt,m)
-  #define QUEUE_MUTEX_LOCK(opt,m)
-  #define QUEUE_MUTEX_UNLOCK(opt,m)
+  #define QUEUE_MUTEX_INIT(queue)
+  #define QUEUE_MUTEX_DESTROY(queue)
+  #define QUEUE_MUTEX_LOCK(queue)
+  #define QUEUE_MUTEX_UNLOCK(queue)
 #endif /* QUEUE_INCLUDE_THREADSAFETY */
 
 #define QUEUE_FORCE_INLINE
@@ -35,20 +42,27 @@
   #ifdef QUEUE_FORCE_INLINE
     #define INLINE_FCT_LOCAL __attribute__((always_inline)) inline
     #define INLINE_PROT_LOCAL __attribute__((always_inline)) static inline
+    #define INLINE_FCT_SHARED  inline __attribute__((always_inline))
+    #define INLINE_PROT_SHARED  extern
   #else /* !QUEUE_FORCE_INLINE */
     #define INLINE_FCT_LOCAL inline
     #define INLINE_PROT_LOCAL static inline
+    #define INLINE_FCT_SHARED  inline
+    #define INLINE_PROT_SHARED extern
   #endif /* QUEUE_FORCE_INLINE */
   #else /* No inline available from C Standard */
     #define INLINE_FCT_LOCAL
     #define INLINE_PROT_LOCAL
+    #define INLINE_FCT_SHARED  inline
+    #define INLINE_PROT_SHARED extern
 #endif /* __STDC_VERSION__ >= C99 */
+
 
 struct TagQueueElement_t
 {
   struct TagQueueElement_t *ptagNext;
   void *pvData;
-  int iDataSize;
+  size_t sDataSize;
 };
 
 typedef struct TagQueueElement_t TagQueueElement;
@@ -74,7 +88,6 @@ TagQueue *ptagQueue_New_g(unsigned int uiOptions) // TODO: Implement more otions
   if(uiOptions & QUEUE_OPTION_SYNCHRONIZED)
     return(NULL);
 #endif /* !QUEUE_INCLUDE_THREADSAFETY */
-
   if(!(ptagNewQueue=malloc(sizeof(TagQueue))))
     return(NULL);
 
@@ -82,41 +95,36 @@ TagQueue *ptagQueue_New_g(unsigned int uiOptions) // TODO: Implement more otions
   ptagNewQueue->ptagFirstElement=NULL;
   ptagNewQueue->ptagLastElement=NULL;
   ptagNewQueue->uiQueueOptions=uiOptions;
-  QUEUE_MUTEX_INIT(uiOptions,&ptagNewQueue->tagQueueMutex);
+  QUEUE_MUTEX_INIT(ptagNewQueue);
   return(ptagNewQueue);
 }
 
+void *pvQueue_AllocateElement_g(size_t sSize)
+{
+  return(malloc(sSize+sizeof(TagQueueElement)));
+}
 
 bool bQueue_Push_g(TagQueue *ptagQueue,
                    void *pvData,
-                   int iDataSize,
-                   bool bCopyDataToNewBuffer)
+                   size_t sDataSize,
+                   EQueue_DataInfo eDataInfo)
 {
+  void *pvDataToAdd=pvData;
   TagQueueElement *ptagNewElement;
-  unsigned char *pucTmp;
 
-  if(iDataSize<1)
-    return(false);
-
-  if(bCopyDataToNewBuffer)
+  if(eDataInfo==eQueue_DataUseCopy)
   {
-    if(!(pucTmp=malloc(sizeof(TagQueueElement)+iDataSize)))
+    if(!(pvDataToAdd=malloc(sDataSize+sizeof(TagQueueElement))))
       return(false);
-    ptagNewElement=(TagQueueElement*)&pucTmp[iDataSize];
-    ptagNewElement->pvData=pucTmp;
-    memcpy(ptagNewElement->pvData,pvData,iDataSize);
-    iDataSize=QUEUE_USE_ONE_MEMORY_BLOCK_SET(iDataSize);
+    memcpy(pvDataToAdd,pvData,sDataSize);
   }
-  else
-  {
-    if(!(ptagNewElement=malloc(sizeof(TagQueueElement))))
-      return(false);
-    ptagNewElement->pvData=pvData;
-  }
-  ptagNewElement->iDataSize=iDataSize;
+  ptagNewElement=(TagQueueElement*)(((char*)pvDataToAdd)+sDataSize);
+  ptagNewElement->sDataSize=sDataSize;
+  ptagNewElement->pvData=pvDataToAdd;
   ptagNewElement->ptagNext=NULL;
+  printf("***QUEUE 0x%p: Adding Msg data 0x%p,to datap ->0x%p, size: %" PRI_SIZET "\n",ptagQueue,pvData,pvDataToAdd,sDataSize);   // TODO: remove this
 
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_LOCK(ptagQueue);
   /* Check if first element */
   if(!ptagQueue->ptagFirstElement)
   {
@@ -129,7 +137,7 @@ bool bQueue_Push_g(TagQueue *ptagQueue,
     ptagQueue->ptagLastElement=ptagNewElement;
   }
   ++ptagQueue->iItemCount;
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
   return(true);
 }
 
@@ -140,11 +148,11 @@ int iQueue_GetElementsCount_g(TagQueue *ptagQueue)
 }
 
 
-int iQueue_GetNextElementSize_g(TagQueue *ptagQueue)
+size_t sQueue_GetNextElementSize_g(TagQueue *ptagQueue)
 {
   if(!ptagQueue->ptagFirstElement)
-    return(-1);
-  return(QUEUE_USE_ONE_MEMORY_BLOCK_UNSET(ptagQueue->ptagFirstElement->iDataSize));
+    return(0);
+  return(ptagQueue->ptagFirstElement->sDataSize);
 }
 
 bool bQueue_DeleteNextElement_g(TagQueue *ptagQueue,
@@ -152,102 +160,64 @@ bool bQueue_DeleteNextElement_g(TagQueue *ptagQueue,
 {
   TagQueueElement *ptagNewFirstElement;
 
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_LOCK(ptagQueue);
   if(!ptagQueue->ptagFirstElement)
   {
-    QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+    QUEUE_MUTEX_UNLOCK(ptagQueue);
     return(false);
   }
 
   ptagNewFirstElement=ptagQueue->ptagFirstElement->ptagNext;
-  if(QUEUE_USE_ONE_MEMORY_BLOCK_IS_SET(ptagQueue->ptagFirstElement->iDataSize))
-  {
-    free(ptagQueue->ptagFirstElement->pvData);
-  }
-  else
-  {
-    free(ptagQueue->ptagFirstElement->pvData);
-    free(ptagQueue->ptagFirstElement);
-  }
+  free(ptagQueue->ptagFirstElement->pvData);
   ptagQueue->ptagFirstElement=ptagNewFirstElement;
   --ptagQueue->iItemCount;
   if(piItemsRemaining)
     *piItemsRemaining=ptagQueue->iItemCount;
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
   return(true);
 }
 
 bool bQueue_Pop_g(TagQueue *ptagQueue,
                   void **ppvData,
-                  int *piDataSize,
-                  int *piItemsRemaining,
-                  bool bCopyData)
+                  size_t *psDataSize,
+                  int *piItemsRemaining)
 {
   TagQueueElement *ptagNewFirstElement;
 
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
   /* Check if Queue is empty */
+  QUEUE_MUTEX_LOCK(ptagQueue);
   if(!ptagQueue->ptagFirstElement)
   {
-    QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+    QUEUE_MUTEX_UNLOCK(ptagQueue);
     return(false);
   }
+
+  printf("QUEUE 0x%p: ***getting data 0x%p, size: %" PRI_SIZET "\n",ptagQueue,ptagQueue->ptagFirstElement->pvData,ptagQueue->ptagFirstElement->sDataSize);   // TODO: remove this
   ptagNewFirstElement=ptagQueue->ptagFirstElement->ptagNext;
-  if(bCopyData)
-  {
-    if(*piDataSize < QUEUE_USE_ONE_MEMORY_BLOCK_UNSET(ptagQueue->ptagFirstElement->iDataSize))
-    {
-      QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
-      return(false);
-    }
-    *piDataSize=QUEUE_USE_ONE_MEMORY_BLOCK_UNSET(ptagQueue->ptagFirstElement->iDataSize);
-    memcpy(*ppvData,ptagQueue->ptagFirstElement->pvData,*piDataSize);
-    if(QUEUE_USE_ONE_MEMORY_BLOCK_IS_SET(ptagQueue->ptagFirstElement->iDataSize))
-    {
-      free(ptagQueue->ptagFirstElement->pvData);
-    }
-    else
-    {
-      free(ptagQueue->ptagFirstElement->pvData);
-      free(ptagQueue->ptagFirstElement);
-    }
-  }
-  else
-  {
-    *ppvData=ptagQueue->ptagFirstElement->pvData;
-    *piDataSize=QUEUE_USE_ONE_MEMORY_BLOCK_UNSET(ptagQueue->ptagFirstElement->iDataSize);
-    if(!QUEUE_USE_ONE_MEMORY_BLOCK_IS_SET(ptagQueue->ptagFirstElement->iDataSize))
-    {
-      free(ptagQueue->ptagFirstElement);
-    }
-  }
+  *ppvData=ptagQueue->ptagFirstElement->pvData;
+  *psDataSize=ptagQueue->ptagFirstElement->sDataSize;
   ptagQueue->ptagFirstElement=ptagNewFirstElement;
   --ptagQueue->iItemCount;
   if(piItemsRemaining)
     *piItemsRemaining=ptagQueue->iItemCount;
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
   return(true);
 }
 
 bool bQueue_Peek_g(TagQueue *ptagQueue,
                    void **ppvData,
-                   int *piDataSize,
-                   bool bCopyData)
+                   size_t *psDataSize)
 {
+  QUEUE_MUTEX_LOCK(ptagQueue);
   if(!ptagQueue->ptagFirstElement)
-    return(false);
-
-  if(!bCopyData)
   {
-    *ppvData=ptagQueue->ptagFirstElement->pvData;
-    *piDataSize=ptagQueue->ptagFirstElement->iDataSize;
-    return(true);
-  }
-  if(*piDataSize < ptagQueue->iItemCount)
+    QUEUE_MUTEX_UNLOCK(ptagQueue);
     return(false);
+  }
 
-  memcpy(*ppvData,ptagQueue->ptagFirstElement->pvData,ptagQueue->ptagFirstElement->iDataSize);
-  *piDataSize=ptagQueue->ptagFirstElement->iDataSize;
+  *ppvData=ptagQueue->ptagFirstElement->pvData;
+  *psDataSize=ptagQueue->ptagFirstElement->sDataSize;
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
   return(true);
 }
 
@@ -258,46 +228,36 @@ INLINE_FCT_LOCAL void vQueue_ElementsDelete_m(TagQueue *ptagQueue)
   ptagCurrElement=ptagQueue->ptagFirstElement;
   while(ptagCurrElement!=NULL)
   {
-    if(QUEUE_USE_ONE_MEMORY_BLOCK_IS_SET(ptagCurrElement->iDataSize))
-    {
-      ptagNextElement=ptagCurrElement->ptagNext;
-      free(ptagCurrElement->pvData);
-    }
-    else
-    {
-      ptagNextElement=ptagCurrElement->ptagNext;
-      free(ptagCurrElement->pvData);
-      free(ptagCurrElement);
-    }
+    ptagNextElement=ptagCurrElement->ptagNext;
+    free(ptagCurrElement->pvData);
     ptagCurrElement=ptagNextElement;
   }
 }
 
 void vQueue_Clear_g(TagQueue *ptagQueue)
 {
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_LOCK(ptagQueue);
   vQueue_ElementsDelete_m(ptagQueue);
   ptagQueue->iItemCount=0;
   ptagQueue->ptagFirstElement=NULL;
   ptagQueue->ptagLastElement=NULL;
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
 }
 
 void vQueue_Delete_g(TagQueue *ptagQueue)
 {
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_LOCK(ptagQueue);
   vQueue_ElementsDelete_m(ptagQueue);
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
-  QUEUE_MUTEX_DESTROY(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
+  QUEUE_MUTEX_DESTROY(ptagQueue);
   free(ptagQueue);
 }
-
 
 void vQueue_DumpElements_g(TagQueue *ptagQueue)
 {
   TagQueueElement *ptagElement;
   char caBuffer[256];
-  QUEUE_MUTEX_LOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_LOCK(ptagQueue);
 
   sprintf(caBuffer,
           "****DUMPING_QUEUE****\n"
@@ -325,5 +285,5 @@ void vQueue_DumpElements_g(TagQueue *ptagQueue)
 
     puts(caBuffer);
   }
-  QUEUE_MUTEX_UNLOCK(ptagQueue->uiQueueOptions,&ptagQueue->tagQueueMutex);
+  QUEUE_MUTEX_UNLOCK(ptagQueue);
 }
