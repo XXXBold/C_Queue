@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-  #define TEST_QUEUE_THREADS /* Enable to test multithreaded */
+#define TEST_QUEUE_THREADS /* Enable to test multithreaded */
 
 #include "booltype.h"
 #include "Queue.h"
@@ -13,7 +13,7 @@
   bool bExit_PopThreads_m;
 #endif /* TEST_QUEUE_THREADS */
 
-#define QUEUE_ITEMS_ADD 0xFFFFFF
+#define QUEUE_ITEMS_ADD 0x10
 
 void vQueue_Test_g(void);
 void vQueue_TestThreads_g(void);
@@ -45,36 +45,36 @@ int main(int argc, char *argv[])
   vQueue_TestThreads_g();
 #endif
   puts("Test passed!");
-  return(0);
+  return(EXIT_SUCCESS);
 }
 
 void vQueue_Test_g(void)
 {
   void *pvData;
-  int iSize=0;
+  size_t sSize=0;
   int iIndex;
   TagQueue *ptagQueue;
   if(!(ptagQueue=ptagQueue_New_g(0)))
   {
     puts("ptagQueue_New_g() failed");
-    exit(-1);
+    exit(EXIT_FAILURE);
   }
   for(iIndex=0; iIndex<QUEUE_ITEMS_ADD; ++iIndex)
   {
-    if(!bQueue_Push_g(ptagQueue,pcData[0],strlen(pcData[0])+1,true))
+    if(!bQueue_Push_g(ptagQueue,pcData[0],strlen(pcData[0])+1,eQueue_DataUseCopy))
     {
       puts("push failed");
-      exit(-1);
+      exit(EXIT_FAILURE);
     }
   }
   for(iIndex=0;iIndex<QUEUE_ITEMS_ADD;++iIndex)
   {
     if(iIndex%2)
     {
-      if(!bQueue_Pop_g(ptagQueue,&pvData,&iSize,NULL,false))
+      if(!bQueue_Pop_g(ptagQueue,&pvData,&sSize,NULL))
       {
         puts("bQueue_Pop_g() failed");
-        exit(-1);
+        exit(EXIT_FAILURE);
       }
       free(pvData);
     }
@@ -83,7 +83,7 @@ void vQueue_Test_g(void)
       if(!bQueue_DeleteNextElement_g(ptagQueue,NULL))
       {
         puts("bQueue_DeleteNextElement_g() failed");
-        exit(-1);
+        exit(EXIT_FAILURE);
       }
     }
   }
@@ -102,7 +102,7 @@ void vQueue_TestThreads_g(void)
   if(!(ptagQueue = ptagQueue_New_g(QUEUE_OPTION_SYNCHRONIZED)))
   {
     puts("ptagQueue_New_g() failed");
-    exit(-1);
+    exit(EXIT_FAILURE);
   }
   bExit_PopThreads_m=false;
 
@@ -111,7 +111,7 @@ void vQueue_TestThreads_g(void)
     if(pthread_create(&threadsPush[iIndex],NULL,pvThread_Push_m,ptagQueue))
     {
       printf("pthread_create() failed\n");
-      exit(-1);
+      exit(EXIT_FAILURE);
     }
   }
   for(iIndex=0;iIndex<POP_THREADS;++iIndex)
@@ -119,7 +119,7 @@ void vQueue_TestThreads_g(void)
     if(pthread_create(&threadsPop[iIndex],NULL,pvThread_Pop_m,ptagQueue))
     {
       printf("pthread_create() failed\n");
-      exit(-1);
+      exit(EXIT_FAILURE);
     }
   }
   for(iIndex=0;iIndex<PUSH_THREADS;++iIndex)
@@ -127,7 +127,7 @@ void vQueue_TestThreads_g(void)
     if(pthread_join(threadsPush[iIndex],NULL))
     {
       printf("pthread_join() failed\n");
-      exit(-1);
+      exit(EXIT_FAILURE);
     }
   }
   bExit_PopThreads_m=true;
@@ -136,7 +136,7 @@ void vQueue_TestThreads_g(void)
     if(pthread_join(threadsPop[iIndex],NULL))
     {
       printf("pthread_join() failed\n");
-      exit(-1);
+      exit(EXIT_FAILURE);
     }
   }
   printf("Queue Elements left = %d\n",iQueue_GetElementsCount_g(ptagQueue));
@@ -150,9 +150,9 @@ void *pvThread_Push_m(void *pvArg)
   int iIndex;
   for(iIndex=0;iIndex<100;iIndex++)
   {
-//  printf("---> _%s_ %d\n",pcData[iIndex/10],strlen(pcData[iIndex/10])+1);
-    if(!bQueue_Push_g(ptagQueue,pcData[iIndex/10],strlen(pcData[iIndex/10])+1,true))
-      printf("push failed\n");
+    printf("---> _%s_ %d\n",pcData[iIndex/10],strlen(pcData[iIndex/10])+1);
+    if(!bQueue_Push_g(ptagQueue,pcData[iIndex/10],strlen(pcData[iIndex/10])+1,eQueue_DataUseCopy))
+      puts("pvThread_Push_m(): bQueue_Push_g() failed!");
   }
   return(NULL);
 }
@@ -161,14 +161,14 @@ void *pvThread_Pop_m(void *pvArg)
 {
   TagQueue *ptagQueue=(TagQueue*)pvArg;
   void *pvData;
-  int iBufferSize=0;
+  size_t sBufferSize=0;
   bool bGotData;
 
-  while(((bGotData=bQueue_Pop_g(ptagQueue,&pvData,&iBufferSize,NULL,false))) || (!bExit_PopThreads_m))
+  while(((bGotData=bQueue_Pop_g(ptagQueue,&pvData,&sBufferSize,NULL))) || (!bExit_PopThreads_m))
   {
     if(!bGotData)
       continue;
-//  printf("<--- _%s_\n",(char*)pvData);
+    printf("<--- _%s_\n",(char*)pvData);
     free(pvData);
   }
   return(NULL);
